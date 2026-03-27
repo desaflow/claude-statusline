@@ -161,6 +161,32 @@ def main():
     five_str = color_pct(five_pct, "5h", five_h.get("resets_at"))
     seven_str = color_pct(seven_pct, "7d", seven_d.get("resets_at"))
 
+    # Per-prompt usage spike detection (track delta between statusline updates)
+    spike_str = ""
+    rate_state_path = os.path.join(os.path.expanduser("~"), ".claude", "rate-state.json")
+    session_id = data.get("session_id", "")
+    try:
+        rate_state = {}
+        if os.path.exists(rate_state_path):
+            with open(rate_state_path, "r", encoding="utf-8") as f:
+                rate_state = json.load(f)
+
+        prev = rate_state.get(session_id, {}).get("five_pct")
+        if five_pct is not None and prev is not None:
+            delta = five_pct - prev
+            if delta >= 5:
+                spike_str = f"\033[31;1m!! last prompt ate {delta:.1f}% !!\033[0m"
+
+        # Save current for next comparison
+        if session_id and five_pct is not None:
+            rate_state[session_id] = {"five_pct": five_pct}
+            tmp = rate_state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(rate_state, f)
+            os.replace(tmp, rate_state_path)
+    except Exception:
+        pass
+
     # Context: show absolute tokens + percentage
     def format_ctx(ctx):
         pct = ctx.get("used_percentage")
@@ -295,6 +321,8 @@ def main():
         line1.append(warn_str)
     line1.append(five_str)
     line1.append(seven_str)
+    if spike_str:
+        line1.append(spike_str)
 
     # API wait time (how long you stared at "thinking...")
     api_ms = cost.get("total_api_duration_ms", 0)
