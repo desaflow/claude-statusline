@@ -126,19 +126,34 @@ def main():
     five_pct = five_h.get("used_percentage")
     seven_pct = seven_d.get("used_percentage")
 
-    def color_pct(pct, label):
+    def color_pct(pct, label, reset_at=None):
         if pct is None:
             return f"{label}: ?"
         pct_round = round(pct)
+        # Add reset countdown if available
+        reset_str = ""
+        if reset_at:
+            try:
+                from datetime import datetime
+                reset_time = datetime.fromtimestamp(reset_at)
+                remaining = reset_time - datetime.now()
+                if remaining.total_seconds() > 0:
+                    mins = int(remaining.total_seconds() / 60)
+                    hrs = mins // 60
+                    mins = mins % 60
+                    reset_str = f"({hrs}h{mins:02d}m)" if hrs else f"({mins}m)"
+            except Exception:
+                pass
+        display = f"{label}: {pct_round}%{reset_str}"
         if pct >= 80:
-            return f"\033[31m{label}: {pct_round}%\033[0m"
+            return f"\033[31m{display}\033[0m"
         elif pct >= 50:
-            return f"\033[33m{label}: {pct_round}%\033[0m"
+            return f"\033[33m{display}\033[0m"
         else:
-            return f"\033[32m{label}: {pct_round}%\033[0m"
+            return f"\033[32m{display}\033[0m"
 
-    five_str = color_pct(five_pct, "5h")
-    seven_str = color_pct(seven_pct, "7d")
+    five_str = color_pct(five_pct, "5h", five_h.get("resets_at"))
+    seven_str = color_pct(seven_pct, "7d", seven_d.get("resets_at"))
 
     # Context: show absolute tokens + percentage
     def format_ctx(ctx):
@@ -220,11 +235,20 @@ def main():
         session_id = data.get("session_id", "")
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # Update current session
+        # Update current session (atomic write to avoid race with parallel sessions)
         if session_id and cost_usd is not None:
+            # Re-read in case another session wrote since we last read
+            if os.path.exists(cost_log_path):
+                try:
+                    with open(cost_log_path, "r", encoding="utf-8") as f:
+                        cost_log = json.load(f)
+                except Exception:
+                    pass
             cost_log[session_id] = {"date": today, "cost": cost_usd}
-            with open(cost_log_path, "w", encoding="utf-8") as f:
+            tmp_path = cost_log_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(cost_log, f)
+            os.replace(tmp_path, cost_log_path)  # atomic on Windows
 
         # Sum weekly and monthly
         now = datetime.now()
