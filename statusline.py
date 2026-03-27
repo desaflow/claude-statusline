@@ -1,11 +1,86 @@
-"""Claude Code Statusline — real-time HUD for your terminal.
+"""Desaflow OS statusline — persistent HUD at bottom of Claude Code."""
+import json, sys, os, re, subprocess
 
-Shows model, git branch, context usage, rate limits, session duration,
-and warns when you cross the 200k token threshold.
 
-Install: curl -sL https://raw.githubusercontent.com/desaflow/claude-statusline/main/install.py | python3
-"""
-import json, sys, os, subprocess
+# --- Model detection from transcript (bypasses stale settings.json) ---
+
+MODEL_CONTEXT_SIZES = {
+    "opus": {"default": 200_000, "1m": 1_000_000},
+    "sonnet": {"default": 200_000, "1m": 1_000_000},
+    "haiku": {"default": 200_000},
+}
+
+def detect_model_from_transcript(transcript_path):
+    """Read the session JSONL backward to find the real model."""
+    if not transcript_path or not os.path.exists(transcript_path):
+        return None, None
+
+    try:
+        # Read last 200KB of the file (enough to find recent model info)
+        file_size = os.path.getsize(transcript_path)
+        read_start = max(0, file_size - 200_000)
+
+        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
+            if read_start > 0:
+                f.seek(read_start)
+                f.readline()  # skip partial line
+            lines = f.readlines()
+
+        # Scan backward for /model switch or assistant response
+        model_name = None
+        model_id = None
+        context_size = None
+
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+
+            # Check for /model command output (e.g. "Set model to Opus 4.6 (1M context)")
+            if "Set model to" in line:
+                match = re.search(r"Set model to\s+\\?\*?\[?1m\]?(.+?)\\?\*?\[?22m\]?", line)
+                if not match:
+                    match = re.search(r"Set model to\s+(.+?)(?:\\n|\")", line)
+                if match:
+                    raw = match.group(1).strip()
+                    # Strip ANSI codes
+                    raw = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+                    raw = re.sub(r"\[/?[0-9]*m\]?", "", raw).strip()
+                    model_name = raw
+                    if "1m" in raw.lower() or "1M" in raw:
+                        context_size = 1_000_000
+                    else:
+                        context_size = 200_000
+                    break
+
+            # Check for assistant message with model field
+            if model_id is None and '"message"' in line and '"model"' in line:
+                try:
+                    obj = json.loads(line)
+                    msg = obj.get("data", {}).get("message", {}).get("message", {})
+                    mid = msg.get("model", "")
+                    if mid and mid.startswith("claude-"):
+                        model_id = mid
+                        # Derive display name
+                        if "opus" in mid:
+                            model_name = "Opus 4.6"
+                        elif "sonnet" in mid:
+                            model_name = "Sonnet 4.6"
+                        elif "haiku" in mid:
+                            model_name = "Haiku 4.5"
+                        # Check context from model id
+                        if "[1m]" in mid or "1m" in mid:
+                            context_size = 1_000_000
+                        # Don't break — keep looking for /model switch which is more authoritative
+                except Exception:
+                    pass
+
+            # If we found a /model switch, that's definitive
+            if model_name and context_size:
+                break
+
+        return model_name, context_size
+    except Exception:
+        return None, None
 
 
 def main():
@@ -15,12 +90,57 @@ def main():
         print("? no data")
         return
 
-    # Model
-    model = data.get("model", {}).get("display_name", "?")
+    # Model — try transcript first, fall back to JSON data
+    model_data = data.get("model", {})
+    model = model_data.get("display_name", "?")
+    model_id = model_data.get("id", "")
 
-    # Context: show absolute tokens + percentage
+    transcript_path = data.get("transcript_path", "")
+    real_model, real_ctx_size = detect_model_from_transcript(transcript_path)
+    if real_model:
+        model = real_model
+
+    # Context window
     ctx = data.get("context_window", {})
 
+    # Override context_window_size if transcript gave us the real one
+    if real_ctx_size and real_ctx_size != ctx.get("context_window_size", 0):
+        ctx = dict(ctx)  # don't mutate original
+        old_size = ctx.get("context_window_size", 200_000)
+        ctx["context_window_size"] = real_ctx_size
+        # Recalculate percentage based on real context size
+        usage = ctx.get("current_usage", {})
+        input_tok = usage.get("input_tokens", 0)
+        cache_create = usage.get("cache_creation_input_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        total_tok = input_tok + cache_create + cache_read
+        if real_ctx_size > 0 and total_tok > 0:
+            ctx["used_percentage"] = round(total_tok / real_ctx_size * 100)
+
+    ctx_pct = ctx.get("used_percentage")
+
+    # Rate limits (Pro/Max only)
+    rl = data.get("rate_limits", {})
+    five_h = rl.get("five_hour", {})
+    seven_d = rl.get("seven_day", {})
+    five_pct = five_h.get("used_percentage")
+    seven_pct = seven_d.get("used_percentage")
+
+    def color_pct(pct, label):
+        if pct is None:
+            return f"{label}: ?"
+        pct_round = round(pct)
+        if pct >= 80:
+            return f"\033[31m{label}: {pct_round}%\033[0m"
+        elif pct >= 50:
+            return f"\033[33m{label}: {pct_round}%\033[0m"
+        else:
+            return f"\033[32m{label}: {pct_round}%\033[0m"
+
+    five_str = color_pct(five_pct, "5h")
+    seven_str = color_pct(seven_pct, "7d")
+
+    # Context: show absolute tokens + percentage
     def format_ctx(ctx):
         pct = ctx.get("used_percentage")
         size = ctx.get("context_window_size", 0)
@@ -53,26 +173,9 @@ def main():
 
     ctx_colored = format_ctx(ctx)
 
-    # Rate limits (Pro/Max only)
-    rl = data.get("rate_limits", {})
-    five_h = rl.get("five_hour", {})
-    seven_d = rl.get("seven_day", {})
-    five_pct = five_h.get("used_percentage")
-    seven_pct = seven_d.get("used_percentage")
-
-    def color_pct(pct, label):
-        if pct is None:
-            return f"{label}: ?"
-        pct_round = round(pct)
-        if pct >= 80:
-            return f"\033[31m{label}: {pct_round}%\033[0m"  # red
-        elif pct >= 50:
-            return f"\033[33m{label}: {pct_round}%\033[0m"  # yellow
-        else:
-            return f"\033[32m{label}: {pct_round}%\033[0m"  # green
-
-    five_str = color_pct(five_pct, "5h")
-    seven_str = color_pct(seven_pct, "7d")
+    # Profile detection
+    profile = os.environ.get("CLAUDE_PROFILE", "")
+    profile_str = f"[{profile}]" if profile else ""
 
     # Git branch
     try:
@@ -99,7 +202,7 @@ def main():
     over_200k = data.get("exceeds_200k_tokens", False)
     warn_str = "\033[31;1m!! >200k !!\033[0m" if over_200k else ""
 
-    # Cost (API-equivalent, informational)
+    # Cost
     cost_usd = cost.get("total_cost_usd")
     cost_str = f"${cost_usd:.2f}" if cost_usd is not None else ""
 
@@ -112,6 +215,8 @@ def main():
 
     # Build the line
     parts = [f"\033[1m{model}\033[0m"]
+    if profile_str:
+        parts.append(f"\033[35m{profile_str}\033[0m")
     if branch:
         parts.append(f"\033[34m{branch}\033[0m")
     parts.append(ctx_colored)
