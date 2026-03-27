@@ -271,8 +271,13 @@ def main():
     except Exception:
         pass
 
-    week_str = f"wk:${week_total:.0f}" if week_total > 0 else ""
-    month_str = f"mo:${month_total:.0f}" if month_total > 0 else ""
+    def fmt_cost(n):
+        if n >= 1000:
+            return f"${n/1000:.1f}k"
+        return f"${n:.0f}"
+
+    week_str = f"wk:{fmt_cost(week_total)}" if week_total > 0 else ""
+    month_str = f"mo:{fmt_cost(month_total)}" if month_total > 0 else ""
 
     # Lines changed
     added = cost.get("total_lines_added", 0)
@@ -281,29 +286,33 @@ def main():
     if added or removed:
         lines_str = f"+{added}/-{removed}"
 
-    # Build the line
-    parts = [f"\033[1m{model}\033[0m"]
+    # Build two lines — essential on top, secondary on bottom
+    line1 = [f"\033[1m{model}\033[0m"]
     if profile_str:
-        parts.append(f"\033[35m{profile_str}\033[0m")
-    if branch:
-        parts.append(f"\033[34m{branch}\033[0m")
-    parts.append(ctx_colored)
+        line1.append(f"\033[35m{profile_str}\033[0m")
+    line1.append(ctx_colored)
     if warn_str:
-        parts.append(warn_str)
-    parts.append(five_str)
-    parts.append(seven_str)
-    if dur_str:
-        parts.append(dur_str)
-    if cost_str:
-        parts.append(cost_str)
-    if week_str:
-        parts.append(week_str)
-    if month_str:
-        parts.append(month_str)
-    if lines_str:
-        parts.append(lines_str)
+        line1.append(warn_str)
+    line1.append(five_str)
+    line1.append(seven_str)
 
-    print(" | ".join(parts))
+    line2 = []
+    if branch:
+        line2.append(f"\033[34m{branch}\033[0m")
+    if dur_str:
+        line2.append(dur_str)
+    if cost_str:
+        line2.append(cost_str)
+    if week_str:
+        line2.append(week_str)
+    if month_str:
+        line2.append(month_str)
+    if lines_str:
+        line2.append(lines_str)
+
+    print(" | ".join(line1))
+    if line2:
+        print(" | ".join(line2))
 
 
 if __name__ == "__main__":
