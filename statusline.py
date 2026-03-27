@@ -202,9 +202,47 @@ def main():
     over_200k = data.get("exceeds_200k_tokens", False)
     warn_str = "\033[31;1m!! >200k !!\033[0m" if over_200k else ""
 
-    # Cost
+    # Cost — current session + rolling weekly/monthly totals
     cost_usd = cost.get("total_cost_usd")
     cost_str = f"${cost_usd:.2f}" if cost_usd is not None else ""
+
+    # Persist session cost to log for weekly/monthly tracking
+    from datetime import datetime, timedelta
+    cost_log_path = os.path.join(os.path.expanduser("~"), ".claude", "cost-log.json")
+    week_total = 0
+    month_total = 0
+    try:
+        cost_log = {}
+        if os.path.exists(cost_log_path):
+            with open(cost_log_path, "r", encoding="utf-8") as f:
+                cost_log = json.load(f)
+
+        session_id = data.get("session_id", "")
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Update current session
+        if session_id and cost_usd is not None:
+            cost_log[session_id] = {"date": today, "cost": cost_usd}
+            with open(cost_log_path, "w", encoding="utf-8") as f:
+                json.dump(cost_log, f)
+
+        # Sum weekly and monthly
+        now = datetime.now()
+        week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        month_ago = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        for sid, entry in cost_log.items():
+            d = entry.get("date", "")
+            c = entry.get("cost", 0)
+            if d >= week_ago:
+                week_total += c
+            if d >= month_ago:
+                month_total += c
+    except Exception:
+        pass
+
+    week_str = f"wk:${week_total:.0f}" if week_total > 0 else ""
+    month_str = f"mo:${month_total:.0f}" if month_total > 0 else ""
 
     # Lines changed
     added = cost.get("total_lines_added", 0)
@@ -228,6 +266,10 @@ def main():
         parts.append(dur_str)
     if cost_str:
         parts.append(cost_str)
+    if week_str:
+        parts.append(week_str)
+    if month_str:
+        parts.append(month_str)
     if lines_str:
         parts.append(lines_str)
 
