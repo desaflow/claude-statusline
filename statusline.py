@@ -137,11 +137,17 @@ def main():
                 from datetime import datetime
                 reset_time = datetime.fromtimestamp(reset_at)
                 remaining = reset_time - datetime.now()
-                if remaining.total_seconds() > 0:
-                    mins = int(remaining.total_seconds() / 60)
-                    hrs = mins // 60
-                    mins = mins % 60
-                    reset_str = f"({hrs}h{mins:02d}m)" if hrs else f"({mins}m)"
+                secs = remaining.total_seconds()
+                if secs > 0:
+                    days = int(secs // 86400)
+                    hrs = int((secs % 86400) // 3600)
+                    mins = int((secs % 3600) // 60)
+                    if days > 0:
+                        reset_str = f"({days}d{hrs}h)"
+                    elif hrs > 0:
+                        reset_str = f"({hrs}h{mins:02d}m)"
+                    else:
+                        reset_str = f"({mins}m)"
             except Exception:
                 pass
         display = f"{label}: {pct_round}%{reset_str}"
