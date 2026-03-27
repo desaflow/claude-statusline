@@ -296,11 +296,25 @@ def main():
     line1.append(five_str)
     line1.append(seven_str)
 
+    # API wait time (how long you stared at "thinking...")
+    api_ms = cost.get("total_api_duration_ms", 0)
+    if api_ms and duration_ms:
+        api_mins = int(api_ms / 60000)
+        api_hrs = api_mins // 60
+        api_mins = api_mins % 60
+        api_str = f"{api_hrs}h{api_mins:02d}m" if api_hrs else f"{api_mins}m"
+        wait_pct = round(api_ms / duration_ms * 100)
+        wait_str = f"wait:{api_str}({wait_pct}%)"
+    else:
+        wait_str = ""
+
     line2 = []
     if branch:
         line2.append(f"\033[34m{branch}\033[0m")
     if dur_str:
         line2.append(dur_str)
+    if wait_str:
+        line2.append(wait_str)
     if cost_str:
         line2.append(cost_str)
     if week_str:
